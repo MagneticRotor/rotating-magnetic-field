@@ -8,3 +8,8 @@
  * Adartuit Metro M0 Express Tutorial under [learn.adafruit.com/adafruit-metro-m0-express-designed-for-circuitpython](https://learn.adafruit.com/adafruit-metro-m0-express-designed-for-circuitpython)
  * Adafruit circuitpyton servo tutorial under [learn.adafruit.com/circuitpython-essentials/circuitpython-servo](https://learn.adafruit.com/circuitpython-essentials/circuitpython-servo)
  
+## Usage Notes
+Information to use the program and set things up.
+
+## Developer Notes
+ * Circtuipython has supervisor.runtime.serial_bytes_available
