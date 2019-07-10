@@ -38,13 +38,21 @@ from adafruit_motor import servo
 
 # Settings
 servo_zero_speed = -0.017
+servo_max_speed = 1.0
+servo_min_speed = -1.0
 servo_pin = board.A2
+help_message = """ Magnetic Field Rotator Commands:
+help - prints this message
+servo.stop - stops the servo
+servo.speed value - sets the speed to given value
+"""
 
 # create a PWMOut object on Pin A2.
-pwm = pulseio.PWMOut(servo_pin, frequency=50)
+pwm = pulseio.PWMOut(servo_pin, frequency=256)
      
 # Create a servo object, my_servo.
 my_servo = servo.ContinuousServo(pwm)
+#my_servo = servo.Servo(pwm)
 
 # Loop variable
 command = '' # incoming command string
@@ -59,6 +67,35 @@ while True:
         while supervisor.runtime.serial_bytes_available:
             command += sys.stdin.read(1)
         # If there's a completed command -> isolate and print it
+        if '\n' in command:
+            fullcomm, command = command.split('\n')
+            # Help command
+            if 'help' in fullcomm.strip()[:4]:
+                print(help_message)
+            # Stop command
+            elif 'servo.stop' in fullcomm.strip()[:10]:
+                servo_speed = servo_zero_speed
+                my_servo.throttle = servo_zero_speed
+                print('Stopped Servo')
+            # Speed command
+            elif 'servo.speed' in fullcomm.strip()[:11]:
+                # Get the speed
+                try:
+                    new_speed = float(fullcomm.strip()[11:].strip())
+                except:
+                    print('Invalid speed in command <%s>' % fullcomm)
+                    continue
+                # Check the speed
+                if new_speed < servo_min_speed or new_speed > servo_max_speed:
+                    print('Speed %f out of range [%f . . %f]' % 
+                          (new_speed, servo_min_speed, servo_max_speed))
+                    continue
+                # Set the speed
+                servo_speed = new_speed
+                my_servo.throttle = new_speed
+                print('Set servo speed to %.2f' % new_speed)
+            else:
+                print('Warning, invalid command <%s>' % fullcomm)
     # Sleep
     time.sleep(2.0)
      
