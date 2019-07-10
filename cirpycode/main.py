@@ -32,9 +32,11 @@
 import time
 import sys
 import board
+import busio
 import pulseio
 import supervisor
 from adafruit_motor import servo
+import adafruit_lsm9ds0
 
 # Settings
 servo_zero_speed = -0.017
@@ -53,6 +55,10 @@ pwm = pulseio.PWMOut(servo_pin, frequency=256)
 # Create a servo object, my_servo.
 my_servo = servo.ContinuousServo(pwm)
 #my_servo = servo.Servo(pwm)
+
+# Connect the Magnetometer
+i2c = busio.I2C(board.SCL, board.SDA)
+magsensor = adafruit_lsm9ds0.LSM9DS0_I2C(i2c)
 
 # Loop variable
 command = '' # incoming command string
@@ -94,6 +100,13 @@ while True:
                 servo_speed = new_speed
                 my_servo.throttle = new_speed
                 print('Set servo speed to %.2f' % new_speed)
+            # Get Magnet Command
+            elif 'mag.read' in fullcomm.strip()[:8]:
+                # Get the value
+                mag_x, mag_y, mag_z = magsensor.magnetic
+                mag_tot = (mag_x**2+mag_y**2+mag_z**2)**0.5
+                print('Magnetometer (gauss) - x, y, z, tot: %f, %f, %f, %f' % 
+                      (mag_x, mag_y, mag_z, mag_tot))
             else:
                 print('Warning, invalid command <%s>' % fullcomm)
     # Sleep
