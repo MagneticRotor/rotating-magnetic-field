@@ -39,7 +39,7 @@ import adafruit_mlx90393
 
 # Settings
 show_debug = True
-servo_zero_speed = -0.01
+servo_zero_speed = 0.017
 servo_max_speed = 1.0
 servo_min_speed = -1.0
 servo_pin = board.A2
@@ -68,10 +68,12 @@ magval = 0.0  # input value
 medval = 0.0  # very long term filter time constant 10sec
 fltval = 0.0  # short filter (time constant 0.5sec)
 fltold = fltval # old filter value
-timelast = time.monotonic()
+timelast = time.monotonic() # time of last passage through zero
 deltime = 1.0
 delist = [1.0 for i in range(5)] # list of deltas
 delistind = 0 # index for list
+# State variables
+stoptime = time.monotonic()-10 # time when to stop (countdoun is set if >0)
 
 # Loop variable
 command = '' # incoming command string
@@ -105,9 +107,18 @@ while True:
                 if servo_rpm > now_rpm: servo_speed += rpmdiff / 1000
                 else: servo_speed -= rpmdiff / 1000
                 my_servo.throttle = servo_speed
+    # Check for stopping
+    timemon = time.monotonic()
+    if stoptime < timemon and stoptime > timemon - 1 and servo_speed != servo_zero_speed:
+        servo_speed = servo_zero_speed
+        servo_rpm = 0
+        my_servo.throttle = servo_zero_speed
+        print("Stopping Now")
     # Print message
-    print("Status: speed = %.3f, magy/tot (uT) = %.0f/%.0f, rpm_now/set = %.2f/%.2f" 
-          % (servo_speed,mag_y,mag_tot, 60*len(delist)/sum(delist), servo_rpm))
+    if stoptime > timemon: stopmin = (stoptime-timemon)/60
+    else: stopmin = -1
+    print("Status: speed = %.3f, magy/tot (uT) = %.0f/%.0f, rpm_now/set = %.2f/%.2f, stop in %.1f" 
+          % (servo_speed,mag_y,mag_tot, 60*len(delist)/sum(delist), servo_rpm, stopmin))
     if show_debug:
         print("  valmed/flt =  %.1f/%.1f, dtime = %.2f, <delist> = %.2f" % 
               (medval, fltval, deltime, sum(delist)/len(delist)))
@@ -131,9 +142,26 @@ while True:
                 print(help_message)
             # Stop command
             elif 'stop' in fullcomm.strip()[:4]:
-                servo_speed = servo_zero_speed
-                my_servo.throttle = servo_zero_speed
-                print('Stopped Servo')
+                # Check if there's a stop time in minutes
+                if len(fullcomm.strip()) > 5:
+                    # Get the stop time
+                    try:
+                        new_stop = float(fullcomm.strip()[4:].strip())
+                    except:
+                        print('Invalid stop time in command <%s>' % fullcomm)
+                        continue
+                    # Check the rpm
+                    if new_stop < 0 or new_stop > 43200:
+                        print('Stop time %f out of range [%f . . %f]' %
+                              (new_rpm, 0, 43200))
+                        continue
+                    # Set the stop time
+                    stoptime = time.monotonic() + 60 * new_stop
+                    print('Set stop time in %.1f minutes' % new_stop)
+                else:
+                    servo_speed = servo_zero_speed
+                    my_servo.throttle = servo_zero_speed
+                    print('Stopped Servo')
             # Speed command
             elif 'speed' in fullcomm.strip()[:5]:
                 # Get the speed
@@ -153,13 +181,13 @@ while True:
                 print('Set servo speed to %.2f' % new_speed)
             # Speed command
             elif 'rpm' in fullcomm.strip()[:3]:
-                # Get the speed
+                # Get the rpm
                 try:
                     new_rpm = float(fullcomm.strip()[4:].strip())
                 except:
                     print('Invalid rpm in command <%s>' % fullcomm)
                     continue
-                # Check the speed
+                # Check the rpm
                 if new_rpm < 0 or new_rpm > 150:
                     print('RPM %f out of range [%f . . %f]' %
                           (new_rpm, 0, 150))
