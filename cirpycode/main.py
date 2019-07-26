@@ -13,16 +13,20 @@
       - Signal to A2
 
     - Magnetic Sensors:
+      - GND and 5V
+      - SCL and SDA to corresponding pins
 
     Commands: See "help_message" below
 
     Task List
-    - ./ Connect and get new sensor running -> test it
-    - ./ Connect new servo and add magnet
-    - Make code for getting maxima on all axis (need median code) and when going below median
-    - Make code for getting time between maxima on each axis
-    - make commands for setting rpm frequency (and store)
-    - make code for adjusting RPM based on maxima interval
+    - Make more frequent readings (but less frequent printouts)
+      - use local time instead of delay: make deltime
+    - cycle through longer tasks (includes write to file, write command at end of each)
+    - Get code for setting clock
+    - Get code from writing file (new and append)
+    - Getting timestamp into message
+    - Create new file when needed
+    - Write to file: time, rpmset/now, speed, magxyx, stopcount
 
 """
 
@@ -51,7 +55,7 @@ rpm value - sets the desired RPM value (set rpm 0 to use speed command)
 read - returns magnet probe readout
 """
 
-# create a PWMOut object on Pin A2.
+# create a PWMOut object on Pin A2 (for servo)
 pwm = pulseio.PWMOut(servo_pin, frequency=50)
 
 # Create a servo object, my_servo.
@@ -60,16 +64,23 @@ my_servo = servo.ContinuousServo(pwm)
 
 # Connect the Magnetometer
 i2c = busio.I2C(board.SCL, board.SDA)
-#magsensor = adafruit_lsm9ds0.LSM9DS0_I2C(i2c)
-magsensor = adafruit_mlx90393.MLX90393(i2c, gain=adafruit_mlx90393.GAIN_1X)
+#magsensor = adafruit_lsm9ds0.LSM9DS0_I2C(i2c) # this is for LSM9DS0 sensor
+# Following is for MLX90393 sensor
+#     Possible addresses (depending on A0/A1 setting) are
+#     0x0C, 0x0D, 0x0E and 0x0F
+magsensor = adafruit_mlx90393.MLX90393(i2c, address = 0x0C,
+                                       gain=adafruit_mlx90393.GAIN_1X)
 
-# Statistics variable
+# Statistics variable: The system detects when the short filter value (fltval)
+#     rises above the long filter value (medval). It then uses the time between
+#     subsequent such events to determine the rotation frequency. The last 5
+#     measurements are averaged to determine the speed correction.
 magval = 0.0  # input value
 medval = 0.0  # very long term filter time constant 10sec
 fltval = 0.0  # short filter (time constant 0.5sec)
-fltold = fltval # old filter value
+oldval = fltval # old filter value
 timelast = time.monotonic() # time of last passage through zero
-deltime = 1.0
+deltime = 1.0 # current time between last zero passages
 delist = [1.0 for i in range(5)] # list of deltas
 delistind = 0 # index for list
 # State variables
@@ -87,10 +98,10 @@ while True:
     # Get mag statistics
     magval = mag_y
     medval = 0.99*medval + 0.01*magval
-    fltold = fltval
+    oldval = fltval
     fltval = 0.8*fltval + 0.2*magval
     # Check if fltval has risen above medval
-    if fltval > medval and fltold <= medval:
+    if fltval > medval and oldval <= medval:
         # Check if time is reasonable
         if time.monotonic() > timelast + deltime/5.0 and time.monotonic() > timelast + 0.1:
             # update time delta and last time fltval rose above medval
@@ -106,6 +117,7 @@ while True:
                 rpmdiff = abs(servo_rpm-now_rpm) + 0.5
                 if servo_rpm > now_rpm: servo_speed += rpmdiff / 1000
                 else: servo_speed -= rpmdiff / 1000
+                if servo_speed > 1.0: servo_speed = 1.0
                 my_servo.throttle = servo_speed
     # Check for stopping
     timemon = time.monotonic()
