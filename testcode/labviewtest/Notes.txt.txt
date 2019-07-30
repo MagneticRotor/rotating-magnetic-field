@@ -1,0 +1,23 @@
+Notes for Running on Labview Computer
+=====================================
+
+Connect to Arduino:
+- Use device manager to identify Com port
+- Use putty (may have to enter COM port)
+
+Labview Program:
+================
+
+- Basic requirements:
+  - Buttons for each command that goes to the arduino
+  - Readout for messages
+
+- Structure:
+  - Basic loop:
+    - send message (if needed)
+    - read response and put it in text window
+  - Each button sends a message to the loop (only one for each pass)
+
+- Notes and tips
+  - Listbox has ways to add to bottom (and to scroll to bottom)
+
