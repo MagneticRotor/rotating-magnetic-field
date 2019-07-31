@@ -1,1 +1,4 @@
+# Mac and Eclipse related files
 .DS_Store
+.project
+.pydevproject
