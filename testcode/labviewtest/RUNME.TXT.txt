@@ -1,0 +1,7 @@
+speed 1584
+sleep 10 
+rpm 60
+sleep 40
+speed 1680
+sleep 10
+stop
