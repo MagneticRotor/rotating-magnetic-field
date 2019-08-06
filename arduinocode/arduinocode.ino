@@ -17,18 +17,22 @@
 
  */
 
+//**** Defines
+#define NeoPin 40
+
 //**** Includes
 #include <Servo.h>
 #include <SPI.h>
 #include <SD.h>
-#include "RTClib.h"
+#include <RTClib.h>
 #include <Wire.h>
-#include "Adafruit_MLX90393.h"
+#include <Adafruit_MLX90393.h>
+#include <Adafruit_NeoPixel.h>
 
 //**** Global Variables
 // Servo variables: measured in us pulse to the servo
 float servo_speed = 1500.0; // servo pulse in us (1500 is middle)
-int servo_zero_speed = 1510;
+int servo_zero_speed = 1500;
 int servo_max_speed = 2000;
 int servo_min_speed = 1000;
 float servo_rpm = 0.0; // Current rpm (only used if > 0)
@@ -36,6 +40,7 @@ float servo_rpm = 0.0; // Current rpm (only used if > 0)
 unsigned long read_nextime = 0, read_deltime = 10;
 unsigned long fileout_nextime = 0, fileout_deltime = 100;
 unsigned long print_nextime = 0, print_deltime = 500;
+unsigned long runfile_nextime = 0;
 unsigned long stoptime = 0; // countdown is set if stoptime > 0
 // Help message
 String help_message = "Magnetic Field Rotator Commands:\n"
@@ -55,8 +60,13 @@ float zeropassdelta = 1.0; // current time between last zero passages (s)
 float zeropasslist[5] = {1.0, 1.0, 1.0, 1.0, 1.0}; // list of deltas of zero passages
 int zeropasslind = 0; // index for list
 // Input / Info variables
-char command[100] = ""; // Command input
+char command[200] = ""; // Command input
 int commlen = 0; // current length of command input
+String comm = ""; // A fully received command, ready for execution
+bool runfile_active = false; // Flag indicating we're running "RUNME.TXT"
+char runfilecomm[200] = ""; // Runfile command input
+int runfilecommlen = 0; // current length of runfile command input
+File runfile; // Open runfile
 int readcount = 0; // how many reads were done
 int show_debug = 0; // flag is debug information is to be shown
 String msg; // Output message
@@ -65,6 +75,7 @@ Adafruit_MLX90393 magsensor = Adafruit_MLX90393();
 RTC_PCF8523 rtc;
 const int SDchipSelect = 10;
 Servo my_servo;  
+Adafruit_NeoPixel strip(1, NeoPin, NEO_GRB);
 
 //**** Functions
 
@@ -126,7 +137,8 @@ void printmessage(){
                "/" + String(magtot));
   float rpmnow = 0.0;
   for(int i=0; i<5; i++) { rpmnow += zeropasslist[i]; }
-  Serial.print(", rpm_now/set = " + String(60*5/rpmnow,2) + "/" + String(servo_rpm));
+  rpmnow = 60*5/rpmnow;
+  Serial.print(", rpm_now/set = " + String(rpmnow,2) + "/" + String(servo_rpm));
   long i = stoptime-millis();
   if(i>0){
     Serial.print(", Stop in " + String(i/60000.,1) + "min");
@@ -144,116 +156,193 @@ void printmessage(){
     Serial.print("> ");
     Serial.println(command);
   }
+  if(!servo_rpm){
+    strip.setPixelColor(0,0,0,255);
+  } else {
+    strip.setPixelColor(0,0,255,0);
+  }
+  strip.show();
 }
 
 // CommandRx: Recieve and process commands
 void commandrx(){
-  char rxchar = Serial.read();
-  if(rxchar != '\n' && rxchar != '\r'){
-    // Normal character, add it
-    command[commlen++] = rxchar;
-    command[commlen] = 0;
-  } else {
-    // End of line character, handle command
-    String comm = command; // convert to a string
-    comm.trim(); // cut spaces at ends
-    commlen = 0;
-    command[commlen] = 0;
-    // Help command
-    if(comm.startsWith("help")){
-      Serial.println(help_message);
-    // Stop command
-    } else if(comm.startsWith("stop")){
-      // Check if there's a stop time in minutes
-      if (comm.length() > 5){
-        // Get the stop time
-        String stopstr = comm.substring(5);
-        stopstr.trim();
-        float new_stop = stopstr.toFloat();
-        // Check if it was successfull
-        if(new_stop==0.0){
-          Serial.println("Warning: Invalid stop time in command = " + comm);
-          return;
-        }
-        // Check for valid values
-        if(new_stop < 0 || new_stop > 43200){
-          Serial.println("Warning: Stop time out of range (0..43200) in command = " + comm);
-          return;
-        }
-        // Set the stop time
-        stoptime = millis() + int(60000*new_stop);
-        Serial.println("Set stop time in " + String(new_stop,1) + " minutes");
-      } else {
-        servo_rpm = 0;
-        servo_speed = servo_zero_speed;
-        my_servo.writeMicroseconds(servo_zero_speed);
-        stoptime = 0;
-        Serial.println("Stopped Servo");
-      }
-    // Speed command
-    } else if(comm.startsWith("speed")){
-      // Check if length is correct
-      if (comm.length() < 7){
-        Serial.println("Warning: Invalid speed value in command = " + comm);
-        return;
-      }
-      // Get the speed
-      String speedstr = comm.substring(5);
-      speedstr.trim();
-      int new_speed = speedstr.toInt();
-      // Check if it was successfull
-      if(new_speed==0){
-        Serial.println("Warning: Invalid speed value in command = " + comm);
-        return;
-      }
-      // Check for valid values
-      if(new_speed < servo_min_speed || new_speed > servo_max_speed){
-        Serial.println("Warning: Speed value out or range (" + String(servo_min_speed) +
-                       ".." + String(servo_max_speed) + ") in command = " + comm);
-        return;
-      }
-      // Set the speed
-      servo_speed = new_speed;
-      my_servo.writeMicroseconds(new_speed);
-      servo_rpm = 0;
-      Serial.println("Set servo speed to " + String(new_speed));
-    // RPM command
-    } else if(comm.startsWith("rpm")){
-      // Check if length is correct
-      if (comm.length() < 5){
-        Serial.println("Warning: Invalid rpm value in command = " + comm);
-        return;
-      }
-      // Get the rpm
-      String rpmstr = comm.substring(4);
-      rpmstr.trim();
-      int new_rpm = rpmstr.toInt();
-      // Check if it was successfull
-      if(new_rpm==0){
-        Serial.println("Warning: Invalid rpm value in command = " + comm);
-        return;
-      }
-      // Check for valid values
-      if(new_rpm < 1 || new_rpm > 150){
-        Serial.println("Warning: RPM value out or range (1..150) in command = " + comm);
-        return;
-      }
-      // Set the rpm
-      servo_rpm = new_rpm;
-      Serial.println("Set servo rpm to " + String(new_rpm));
-      // If speed is zero, set initial speed at 10%
-      if(abs(servo_speed - servo_zero_speed) < 20){
-          servo_speed = servo_zero_speed + 100;
-          my_servo.writeMicroseconds(round(servo_speed));
-      }
-    // Read command
-    } else if(comm.startsWith("read")){
-        Serial.println("Magnetometer (uT) - x, y, z, tot: " + String(magx,1) + " " +
-                       String(magy,1) + " " + String(magz) + " " + String(magtot,1) );
+  // Check if serial data is available, if so get character
+  if(Serial.available()>0){
+    char rxchar = Serial.read();
+    if(rxchar != '\n' && rxchar != '\r'){
+      // Regular character, add it
+      command[commlen++] = rxchar;
+      command[commlen] = 0;
     } else {
-      Serial.print("Warning: Invalid command = ");
-      Serial.println(comm);
+      // End of line character, handle command
+      comm = command; // convert to a string and store in comm
+      commlen = 0;
+      command[commlen] = 0;
+      // deactivate runfile if it's active
+      if(runfile_active){
+        runfile_active = false;
+        runfile_nextime = 0;
+        Serial.println("Running RUNME.TXT aborted");
+      }
+      // run the command in comm
+      commandexec();
     }
+  }
+  if(runfile_active){
+    // Exit if timer is running
+	  if(runfile_nextime > millis()){
+ 	    return;
+	  }
+	  // Check if more characters available
+	  if(!runfile.available()){
+  	  // Reached end of file, exit runfile
+	    runfile_active = false;
+	    runfile_nextime = 0;
+	    runfile.close();
+	    Serial.println("Finished running RUNME.TXT");
+    }
+	  // Get next line
+	  char rxchar = runfile.read();
+	  runfilecommlen = 0;
+	  runfilecomm[0] = 0;
+	  while(runfile.available() && rxchar != '\n' && rxchar != '\r'){
+      runfilecomm[runfilecommlen++] = rxchar;
+	    runfilecomm[runfilecommlen] = 0;
+      rxchar = runfile.read();
+	  }
+	  // If command has text -> execute command
+	  if(runfilecomm[0] > 0){
+	    comm = runfilecomm;
+	    comm.trim(); // cut spaces
+      Serial.println(comm);
+	    // If it's a sleep command, set up timer
+      if(comm.startsWith("#")){
+        // It's a comment -> ignore
+        return;
+      }
+      if(comm.startsWith("sleep")) {
+  		  // Check if length is correct
+ 		    if (comm.length() < 7){
+		      Serial.println("Warning: Invalid sleep value in command = " + comm);
+		      return;
+		    }
+		    // Get the delay
+		    String delaystr = comm.substring(6);
+		    delaystr.trim();
+		    unsigned long new_delay = delaystr.toInt();
+		    // Check if it was successfull
+		    if(new_delay==0){
+		      Serial.println("Warning: Invalid sleep value in command = " + comm);
+		      return;
+		    }
+		    // Set the sleep
+		    runfile_nextime  = millis() + new_delay * 1000;
+		    Serial.println("Pausing script for " + String(new_delay) + " seconds");
+	    } else {
+		    // Run command
+		    commandexec();
+	    }
+	  }
+  }
+}
+
+// CommandExec: Executest any command in comm
+void commandexec(){
+  comm.trim(); // cut spaces at ends
+  // Help command
+  if(comm.startsWith("help")){
+    Serial.println(help_message);
+  // Stop command
+  } else if(comm.startsWith("stop")){
+    // Check if there's a stop time in minutes
+    if (comm.length() > 5){
+      // Get the stop time
+      String stopstr = comm.substring(5);
+      stopstr.trim();
+      float new_stop = stopstr.toFloat();
+      // Check if it was successfull
+      if(new_stop==0.0){
+        Serial.println("Warning: Invalid stop time in command = " + comm);
+        return;
+      }
+      // Check for valid values
+      if(new_stop < 0 || new_stop > 43200){
+        Serial.println("Warning: Stop time out of range (0..43200) in command = " + comm);
+        return;
+      }
+      // Set the stop time
+      stoptime = millis() + int(60000*new_stop);
+      Serial.println("Set stop time in " + String(new_stop,1) + " minutes");
+    } else {
+      servo_rpm = 0;
+      servo_speed = servo_zero_speed;
+      my_servo.writeMicroseconds(servo_zero_speed);
+      stoptime = 0;
+      Serial.println("Stopped Servo");
+    }
+  // Speed command
+  } else if(comm.startsWith("speed")){
+    // Check if length is correct
+    if (comm.length() < 7){
+      Serial.println("Warning: Invalid speed value in command = " + comm);
+      return;
+    }
+    // Get the speed
+    String speedstr = comm.substring(5);
+    speedstr.trim();
+    int new_speed = speedstr.toInt();
+    // Check if it was successfull
+    if(new_speed==0){
+      Serial.println("Warning: Invalid speed value in command = " + comm);
+      return;
+    }
+    // Check for valid values
+    if(new_speed < servo_min_speed || new_speed > servo_max_speed){
+      Serial.println("Warning: Speed value out or range (" + String(servo_min_speed) +
+                     ".." + String(servo_max_speed) + ") in command = " + comm);
+      return;
+    }
+    // Set the speed
+    servo_speed = new_speed;
+    my_servo.writeMicroseconds(new_speed);
+    servo_rpm = 0;
+    Serial.println("Set servo speed to " + String(new_speed));
+  // RPM command
+  } else if(comm.startsWith("rpm")){
+    // Check if length is correct
+    if (comm.length() < 5){
+      Serial.println("Warning: Invalid rpm value in command = " + comm);
+      return;
+    }
+    // Get the rpm
+    String rpmstr = comm.substring(4);
+    rpmstr.trim();
+    int new_rpm = rpmstr.toInt();
+    // Check if it was successfull
+    if(new_rpm==0){
+      Serial.println("Warning: Invalid rpm value in command = " + comm);
+      return;
+    }
+    // Check for valid values
+    if(new_rpm < 1 || new_rpm > 150){
+      Serial.println("Warning: RPM value out or range (1..150) in command = " + comm);
+      return;
+    }
+    // Set the rpm
+    servo_rpm = new_rpm;
+    Serial.println("Set servo rpm to " + String(new_rpm));
+    // If speed is zero, set initial speed at 10%
+    if(abs(servo_speed - servo_zero_speed) < 20){
+        servo_speed = servo_zero_speed + 100;
+        my_servo.writeMicroseconds(round(servo_speed));
+    }
+  // Read command
+  } else if(comm.startsWith("read")){
+      Serial.println("Magnetometer (uT) - x, y, z, tot: " + String(magx,1) + " " +
+                     String(magy,1) + " " + String(magz) + " " + String(magtot,1) );
+  } else {
+    Serial.print("Warning: Invalid command = ");
+    Serial.println(comm);
   }
 }
 
@@ -312,8 +401,9 @@ void datalogwrite(){
   // if the file isn't open, pop up an error:
   } else {
     Serial.println("Warning: Error opening " + String(filename));
+    strip.setPixelColor(0,255,0,0);
+    strip.show();
   }
-
 }
 
 //**** Setup and Loop
@@ -322,13 +412,19 @@ void setup() {
   Serial.begin(115200);
   // Wait for serial on USB platforms.
   while(!Serial) { delay(10); }
+
+  // Set up neopixel - set red
+  strip.begin();
+  strip.show();
+  strip.setPixelColor(0,255,0,0);
+  strip.show();
   
   // Initialize MLX90393
   Serial.println("Starting MLX90393");
   if (magsensor.begin()) {
     Serial.println("Found a MLX90393 sensor");
   } else {
-    Serial.println("No sensor fount ... trying again");
+    Serial.println("No sensor found ... trying again");
     delay(1000);
     if (magsensor.begin()) {
       Serial.println("Found a MLX90393 sensor");
@@ -337,7 +433,11 @@ void setup() {
       while (1);
     }
   }
-  
+  if(magsensor.setGain(MLX90393_GAIN_5X)){
+    Serial.println("MLX90393 sensor - gain set");
+  } else {
+    Serial.println("MLX90393 sensor - gain set failure");
+  }
   // Initialize RTC
   Serial.println("Initializing RTC");
   if (! rtc.begin()) {
@@ -360,6 +460,15 @@ void setup() {
   }
   Serial.println("card initialized.");
 
+  // Check if RUNME.TXT is available
+  runfile = SD.open("runme.txt");
+  if(runfile){
+	  Serial.println("RUNME.TXT found - setting up script");
+	  runfile_active = true;
+  } else {
+	  Serial.println("No RUNME.TXT found");
+  }
+
   // Attach Servo
   my_servo.attach(A2);
 }
@@ -372,9 +481,7 @@ void loop(){
     printmessage();
   }
   // Get input
-  if(Serial.available()>0){
-    commandrx();
-  }
+  commandrx();
   // Write log to file
   if(fileout_nextime < millis() && fileout_deltime > 0){
     datalogwrite();
