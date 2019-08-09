@@ -2,7 +2,7 @@
 
 ## Users Manual
 
-This manual describes how to use the magnetic field rotator. The purpose of this setup is to create a rotating magnetic field. To use it you the following items
+This manual describes how to use the magnetic field rotator. The purpose of this setup is to create a rotating magnetic field. To use it you need the following items
  * The rotator box: Contains the Metro M0 microcontroller, the real time clock and the SD card.
  * A USB cable or a 7-9V power source
  * A continuous rotation servo with attached rare earth magnet
@@ -19,10 +19,10 @@ To communicate with the rotator you need either the Arduino program or the Mu ed
 Once the communication is established you should see information streaming from the rotator. Enter the "help" command for a list of available commands.
 
 ### Recording Data
-The system includes an SD card slot. Whenever a properly formatted SD card is inserted the system records current settings and readouts. Each hour a new file is made, the filename format is YYMMDDHH.TXT composed of the current year, month, day and hour. Unplug the system from the power supply / USB cable before removing the SD card.
+The system includes an SD card slot. Whenever a properly formatted SD card is inserted the system records current settings and readouts. Each hour a new file is generated, the filename format is YYMMDDHH.TXT composed of the current year, month, day and hour. It is recommended to unplug the system from the power supply / USB cable before removing the SD card.
 
 ### Scripted Operation
-You can load a simple script onto the SD card which will run whenever the system starts up. The script has to be in a file called RUNME.TXT. The script can contain any command listed in by the help function. The script can also contain the sleep command, which is the word "sleep" followed by the number of seconds that the system should wait before executing the next command. Entering any command over the serial connection will interrupt execution of the RUNME script.
+You can load a simple script which will run whenever the system starts up onto the SD card. The script has to be in a file called RUNME.TXT. The script can contain any command listed in the help function. The script can also contain the sleep command, which is the word "sleep" followed by the number of seconds that the system should wait before executing the next command. Entering any command over the serial connection will interrupt execution of the RUNME script.
 
 ### LabView Program
 The system can also be controlled by a labview program which is the 
