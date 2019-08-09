@@ -43,12 +43,17 @@ unsigned long print_nextime = 0, print_deltime = 500;
 unsigned long runfile_nextime = 0;
 unsigned long stoptime = 0; // countdown is set if stoptime > 0
 // Help message
-String help_message = "Magnetic Field Rotator Commands:\n"
-"  help - prints this message\n"
-"  stop - stops the servo (both speed and rpm mode)\n"
-"  speed value - sets the speed to given value (only works if rpm value = 0)\n"
-"  rpm value - sets the desired RPM value (set rpm 0 to use speed command)\n"
-"  read - returns magnet probe readout";
+String help_message = "Magnetic Field Rotator Commands:\r\n"
+"    help - prints this message\r\n"
+"    stop (delay) - stops the servo (both speed and rpm mode)\r\n"
+"                   optional stop delay in minutes\r\n"
+"    speed value - sets the speed to given value (sets rpm=0)\r\n"
+"    rpm value - sets the desired RPM value (enables automatic speed control)\r\n"
+"    read - returns magnet probe readout\r\n"
+"  Logs will be stored on the SD card. The SD card may also contain\r\n"
+"  a script named RUNME.TXT with is executed on startup.\r\n"
+"  For more details, look at instructions at\r\n"
+"    https://github.com/lingyuan001/rotating-magnetic-field-";
 // Magnet sensor values (in uT)
 float magx, magy, magz, magtot; // Current readings
 float magval = 0.0; // Magnetic input value
@@ -471,6 +476,10 @@ void setup() {
 
   // Attach Servo
   my_servo.attach(A2);
+
+  // Greeting
+  Serial.println("System is ready!");
+  Serial.println("Type \"help\" for a list of commands.")
 }
 
 void loop(){
