@@ -13,6 +13,13 @@ This manual describes how to use the magnetic field rotator. The purpose of this
 ### Electrical Setup
 Connect the magnetic sensor to any of the RJ-12 connectors. Then connect the servo to the servo connector hanging out of the box. Make sure that the brown wire of the servo cable connects to the black wire of the connector cable. Finally connect the USB cable or power supply.
 
+### RGB Diagnostics
+The onboard RGB LED will indicate status
+ * Red: initializing
+ * Green: RPM mode
+ * Blue: Speed mode
+ * Red blinking: Problem with writing to the SD card.
+
 ### Serial Communication with the Rotator
 To communicate with the rotator you need either the Arduino program or the Mu editor. Alternatively you can use Putty (Windows) or screen (Linux, Mac). Once you connected the rotator box to the computer you can find the port it's connected to. On windows find the correct COM port in the Device Manager, for Mac and Unix the port will be listed in the /dev folder.
 
