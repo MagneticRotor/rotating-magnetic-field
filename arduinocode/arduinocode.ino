@@ -24,6 +24,7 @@
 #include <Servo.h>
 #include <SPI.h>
 #include <SD.h>
+//#include "SdFat.h"
 #include <RTClib.h>
 #include <Wire.h>
 #include <Adafruit_MLX90393.h>
@@ -62,7 +63,7 @@ float oldval = 0.0; // previous fltval
 // Magnet zero passage times and deltas (to measure rpm)
 unsigned long zeropasstime = 0.0; // time of last passage through zero (ms)
 float zeropassdelta = 1.0; // current time between last zero passages (s)
-float zeropasslist[5] = {1.0, 1.0, 1.0, 1.0, 1.0}; // list of deltas of zero passages
+float zeropasslist[5] = {0.2, 0.2, 0.2, 0.2, 0.2}; // list of deltas of zero passages
 int zeropasslind = 0; // index for list
 // Input / Info variables
 char command[200] = ""; // Command input
@@ -73,14 +74,23 @@ char runfilecomm[200] = ""; // Runfile command input
 int runfilecommlen = 0; // current length of runfile command input
 File runfile; // Open runfile
 int readcount = 0; // how many reads were done
-int show_debug = 0; // flag is debug information is to be shown
+int show_debug = 1; // flag is debug information is to be shown
 String msg; // Output message
 // Sensors / IO
 Adafruit_MLX90393 magsensor = Adafruit_MLX90393();
+int magsensor_present = 0;
 RTC_PCF8523 rtc;
+//RTC_DS1307 rtc;
 const int SDchipSelect = 10;
 Servo my_servo;  
 Adafruit_NeoPixel strip(1, NeoPin, NEO_GRB);
+// Variables for software SD card access
+//const uint8_t SOFT_MISO_PIN = 12;
+//const uint8_t SOFT_MOSI_PIN = 11;
+//const uint8_t SOFT_SCK_PIN  = 13;
+//const uint8_t SD_CHIP_SELECT_PIN = 10;
+// SdFat software SPI template
+//dFatSoftSpi<SOFT_MISO_PIN, SOFT_MOSI_PIN, SOFT_SCK_PIN> sd;
 
 //**** Functions
 
@@ -377,7 +387,7 @@ void datalogwrite(){
   } else {
     filename += "0" + String(now.hour());
   }
-  filename += ".txt";
+  filename += ".TXT";
   filename = filename.substring(2);
   char fname[50];
   filename.toCharArray(fname,50);
@@ -398,8 +408,12 @@ void datalogwrite(){
                ":" + String(now.second(), DEC) + "\t";
     float rpmnow = 0.0;
     for(int i=0; i<5; i++) { rpmnow += zeropasslist[i]; }
-    datastr += String(servo_speed, 1) + "\t" + String(servo_rpm, 1) + "\t" +
-               String(60*5/rpmnow, 1) + "\t";
+    datastr += String(servo_speed, 1) + "\t" + String(servo_rpm, 1) + "\t";
+    if(rpmnow>2.0){
+      datastr += String(60*5/rpmnow, 1) + "\t";
+    } else {
+      datastr += String(0.0,1) + "\t";
+    }
     datastr += String(magx,1) + "\t" + String(magy,1) + "\t" + String(magz);
     dataFile.println(datastr);
     dataFile.close();
@@ -416,7 +430,9 @@ void setup() {
   // Setup Serial
   Serial.begin(115200);
   // Wait for serial on USB platforms.
-  while(!Serial) { delay(10); }
+  if(!Serial) {
+    delay(1000);
+  }
 
   // Set up neopixel - set red
   strip.begin();
@@ -431,14 +447,21 @@ void setup() {
   } else {
     Serial.println("No sensor found ... trying again");
     delay(1000);
+    magsensor_present = 1;
     if (magsensor.begin()) {
       Serial.println("Found a MLX90393 sensor");
     } else {
       Serial.println("No sensor found ... check your wiring?");  
-      while (1);
+      delay(5000);
+      if(magsensor.begin()) {
+        Serial.println("Found a MLX90393 sensor");
+      } else {
+        Serial.println("No sensor found ... keep going without it");  
+        magsensor_present = 0;
+      }
     }
   }
-  if(magsensor.setGain(MLX90393_GAIN_5X)){
+  if(magsensor.setGain(MLX90393_GAIN_2_5X)){
     Serial.println("MLX90393 sensor - gain set");
   } else {
     Serial.println("MLX90393 sensor - gain set failure");
@@ -449,16 +472,17 @@ void setup() {
     Serial.println("Couldn't find RTC");
     while (1);
   }
-  if (! rtc.initialized()){
-    Serial.println("RTC is NOT running!");
-  } else {
-    Serial.println("RTC Initialized");
-  }
+  //if (! rtc.initialized()){
+  //  Serial.println("RTC is NOT running!");
+  //} else {
+  //  Serial.println("RTC Initialized");
+  //}
 
   // Initialize SD card
   Serial.print("Initializing SD card...");
   // see if the card is present and can be initialized:
-  if (!SD.begin(SDchipSelect)) {
+  //if (!SD.begin(SDchipSelect)) {
+  if(!SD.begin(SDchipSelect)) {
     Serial.println("Card failed, or not present");
     // don't do anything more:
     return;
@@ -479,7 +503,7 @@ void setup() {
 
   // Greeting
   Serial.println("System is ready!");
-  Serial.println("Type \"help\" for a list of commands.")
+  Serial.println("Type \"help\" for a list of commands.");
 }
 
 void loop(){
@@ -520,16 +544,16 @@ void looptst() {
   Serial.println();
   // Add line to data.txt
   //File dataFile = SD.open("datalog.txt", FILE_WRITE);
-  File dataFile = SD.open("19073015.txt", FILE_WRITE);
+  //File dataFile = SD.open("19073015.txt", FILE_WRITE);
   // if the file is available, write to it:
-  if (dataFile) {
-    dataFile.println("File Done");
-    dataFile.close();
-  }
+  //if (dataFile) {
+  //  dataFile.println("File Done");
+  //  dataFile.close();
+  //}
   // if the file isn't open, pop up an error:
-  else {
-    Serial.println("error opening 19073015.txt");
-  }
+  //else {
+  //  Serial.println("error opening 19073015.txt");
+  //}
   // Change servo
   if(servo_speed < 1600) {
     servo_speed += 10;
