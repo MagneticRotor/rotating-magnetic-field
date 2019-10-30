@@ -17,11 +17,28 @@
 
  */
 
+/* Developper Notes:
+
+   2DO:
+   ./ Remove servo code
+   - Add code for stepmove
+   ./ Update magnsensor and stepper code
+   - Review timers, make timer for magsensor, make sure no large part in same 5ms (logging at end)
+   - redo overall loop to have at least 10ms between long items (optimize motor movement)
+   - redefine Neopixel behavior
+   ./ edit help menu
+   - add logging (have a queue for messages, runs if noone else is running for 5ms)
+
+ */
+
 //**** Defines
 #define NeoPin 40
+#define DIRA 12
+#define PWRA 3
+#define DIRB 13
+#define PWRB 11
 
 //**** Includes
-#include <Servo.h>
 #include <SPI.h>
 #include <SD.h>
 //#include "SdFat.h"
@@ -31,26 +48,32 @@
 #include <Adafruit_NeoPixel.h>
 
 //**** Global Variables
-// Servo variables: measured in us pulse to the servo
-float servo_speed = 1500.0; // servo pulse in us (1500 is middle)
-int servo_zero_speed = 1500;
-int servo_max_speed = 2000;
-int servo_min_speed = 1000;
-float servo_rpm = 0.0; // Current rpm (only used if > 0)
+// Steper Motor Variables:
+int stepcount = 0; // counter for steps (always 0..1023)
+float steprpm = 0; // current set RPM (0 for no move, always agrees with stepdeltgoal)
+float stepvelgoal = 0; // goal step velocity steps/sec
+float stepvelnow = 0; // current velocity steps/sec
+long stepdeltnow = 30000; // current step time for movement [us] (0 for no move, always > 0)
+float stepaccel = 100; // acceleration [steps/s/s]
+float stepperrev = 200; // steps per revolution
+unsigned long stepnextms = 0; // milliseconds at which next step to be taken [ms]
+unsigned long stepnextmic = 0; // microseconds at which next step to be taken [us] (0..999)
+int stepdir = 0; // variable inside nextstep()
 // Timing variables: measured in ms
-unsigned long read_nextime = 0, read_deltime = 10;
-unsigned long fileout_nextime = 0, fileout_deltime = 100;
-unsigned long print_nextime = 0, print_deltime = 500;
-unsigned long runfile_nextime = 0;
+unsigned long milnow = 0; // current millis (to avoid calls to millis())
+unsigned long magstep_nextime = 0, magstep_deltime = 50;
+unsigned long fileout_nextime = 0, fileout_deltime = 5000;
+unsigned long print_nextime = 0, print_deltime = 1000;
+unsigned long runfile_nextime = 0, runfile_deltime = 1000;
 unsigned long stoptime = 0; // countdown is set if stoptime > 0
 // Help message
 String help_message = "Magnetic Field Rotator Commands:\r\n"
 "    help - prints this message\r\n"
 "    stop (delay) - stops the servo (both speed and rpm mode)\r\n"
 "                   optional stop delay in minutes\r\n"
-"    speed value - sets the speed to given value (sets rpm=0)\r\n"
-"    rpm value - sets the desired RPM value (enables automatic speed control)\r\n"
+"    rpm value - sets the desired RPM value\r\n"
 "    read - returns magnet probe readout\r\n"
+"    sleep value - sleep in minutes (only valid inside RUNME.TXT)\r\n"
 "  Logs will be stored on the SD card. The SD card may also contain\r\n"
 "  a script named RUNME.TXT with is executed on startup.\r\n"
 "  For more details, look at instructions at\r\n"
@@ -65,6 +88,7 @@ unsigned long zeropasstime = 0.0; // time of last passage through zero (ms)
 float zeropassdelta = 1.0; // current time between last zero passages (s)
 float zeropasslist[5] = {0.2, 0.2, 0.2, 0.2, 0.2}; // list of deltas of zero passages
 int zeropasslind = 0; // index for list
+float now_rpm = 0; // measured RPM from magnetic sensor
 // Input / Info variables
 char command[200] = ""; // Command input
 int commlen = 0; // current length of command input
@@ -82,7 +106,6 @@ int magsensor_present = 0;
 RTC_PCF8523 rtc;
 //RTC_DS1307 rtc;
 const int SDchipSelect = 10;
-Servo my_servo;  
 Adafruit_NeoPixel strip(1, NeoPin, NEO_GRB);
 // Variables for software SD card access
 //const uint8_t SOFT_MISO_PIN = 12;
@@ -94,14 +117,56 @@ Adafruit_NeoPixel strip(1, NeoPin, NEO_GRB);
 
 //**** Functions
 
-// MagnetServo: Reads the magnet and if appropriate adjusts the servo speed
-void magnetservo(){
+void nextstep(){
+  stepcount++;
+  if(stepcount==1024){ stepcount = 0; }
+  if(stepcount & 2){ stepdir = HIGH;
+  } else { stepdir = LOW; }
+  if(stepcount & 1){
+    digitalWrite(DIRA,stepdir);
+    digitalWrite(PWRA,HIGH);
+    digitalWrite(PWRB, LOW);
+  } else {
+    digitalWrite(DIRB,stepdir);
+    digitalWrite(PWRB,HIGH);
+    digitalWrite(PWRA, LOW);
+  }
+}
+
+// Stepmove: Determines if motor has to move, moves motor 1 step
+void stepmove(){
+  if(milnow > stepnextms && stepdeltnow){
+    // call the next step
+    nextstep();
+    //mcount++; // if you don't call nextstep
+    // update mildelt and milnext
+    stepnextmic += stepdeltnow;
+    stepnextms = stepnextms + stepnextmic / 1000;
+    // correct stepnextmic
+    stepnextmic = stepnextmic % 1000;
+    // if milnext == millis -> increase by one
+    if(milnow > stepnextms){
+      if(milnow - stepnextms < 3){
+    	Serial.print("X ");
+      } else if(milnow - stepnextms < 10){
+      	Serial.print("XX ");
+      } else if(milnow - stepnextms < 33){
+      	Serial.print("XXX ");
+      } else {
+        Serial.print("XXXX ");
+      }
+      while(milnow > stepnextms){ stepnextms++; }
+    }
+  }
+}
+
+// Magnetstep: Reads the magnet and updates stepper speed
+void magnetstep(){
   // Update time for next readout
-  read_nextime = millis() + read_deltime;
-  unsigned long timemons = millis();
+  magstep_nextime = millis() + magstep_deltime;
   readcount ++;
   // read magnet values
-  magsensor.readData(&magx, &magy, &magz);
+  //magsensor.readData(&magx, &magy, &magz);
   magtot = sqrt(magx*magx+magy*magy+magz*magz);
   // Get mag statistics
   magval = magy;
@@ -111,35 +176,51 @@ void magnetservo(){
   // Check if fltval has risen above medval
   if(fltval > medval && oldval <= medval){
     // Check if time is reasonable
-    if (timemons > zeropasstime + int(1000*zeropassdelta/5.0) && timemons > zeropasstime + 100){
+    if (milnow > zeropasstime + int(1000*zeropassdelta/5.0) && milnow > zeropasstime + 100){
       // update time delta and last time fltval rose above medval
-      zeropassdelta = (timemons - zeropasstime)/1000.0;
-      zeropasstime = timemons;
+      zeropassdelta = (milnow - zeropasstime)/1000.0;
+      zeropasstime = milnow;
       // update list 
       zeropasslind += 1;
       if(zeropasslind >= 5){ zeropasslind = 0; }
       zeropasslist[zeropasslind] = zeropassdelta;
-      // If rpm is set, do correction
-      if(servo_rpm>0){
-        float now_rpm = 0.0;
-        for(int i=0;i<5;i++){ now_rpm += zeropasslist[i]; }
-        now_rpm = 60*5/now_rpm;
-        float rpmdiff = abs(servo_rpm-now_rpm) + 0.1;
-        //Serial.println("RPMdiff = " + String(rpmdiff));
-        if(servo_rpm > now_rpm) { servo_speed += rpmdiff/10.0;
-        } else { servo_speed -= rpmdiff/10.0; }
-        if(servo_speed > servo_max_speed) { servo_speed = servo_max_speed; }
-        if(servo_speed < servo_zero_speed) { servo_speed = servo_zero_speed + 20; }
-        my_servo.writeMicroseconds(round(servo_speed));
-      }
+      // Calculate now_rpm
+      now_rpm = 0.0;
+      for(int i=0;i<5;i++){ now_rpm += zeropasslist[i]; }
+      now_rpm = 60*5/now_rpm;
     }
   }
   // Check for stopping
-  if (stoptime < timemons && stoptime > timemons - 1000 && servo_speed != servo_zero_speed){
-      servo_speed = servo_zero_speed;
-      servo_rpm = 0;
-      my_servo.writeMicroseconds(servo_zero_speed);
-      Serial.println("Stopping Now");
+  if (stoptime < milnow && stoptime > milnow - 1000){
+    steprpm = 0;
+    stepvelgoal = 0;
+    Serial.println("Stopping motor now");
+  }
+  // Update motor speed (assume this happens every magstep_deltime)
+  // If goal is smaller
+  if(stepvelgoal < stepvelnow){
+    if( stepvelnow - stepvelgoal > stepaccel * magstep_deltime / 1000.){
+      stepvelnow = stepvelnow - stepaccel * magstep_deltime / 1000.;
+    } else {
+      stepvelnow = stepvelgoal;
+    }
+    if(abs(stepvelnow)>1.0){
+      stepdeltnow = 1000000.0 / stepvelnow;
+    } else {
+      stepdeltnow = 0;
+    }
+  // Else if need to accelerate
+  } else if( stepvelnow < stepvelgoal ){
+    if( stepvelgoal - stepvelnow > stepaccel * magstep_deltime / 1000.){
+      stepvelnow = stepvelnow + stepaccel * magstep_deltime / 1000.;
+    } else {
+      stepvelnow = stepvelgoal;
+    }
+    if(abs(stepvelnow)>1.0){
+      stepdeltnow = 1000000.0 / abs(stepvelnow);
+    } else {
+      stepdeltnow = 0;
+    }
   }
 }
 
@@ -148,12 +229,9 @@ void printmessage(){
   // Update time for next print
   print_nextime = millis() + print_deltime;
   // Print message
-  Serial.print("Status: speed = " + String(servo_speed,1) + ", magy/tot (uT) = " + String(magy) +
-               "/" + String(magtot));
-  float rpmnow = 0.0;
-  for(int i=0; i<5; i++) { rpmnow += zeropasslist[i]; }
-  rpmnow = 60*5/rpmnow;
-  Serial.print(", rpm_now/set = " + String(rpmnow,2) + "/" + String(servo_rpm));
+  Serial.print("Status: speed_now/goal = " + String(stepvelnow,1) + "/" + String(stepvelgoal,1) +
+		       ", magy/tot (uT) = " + String(magy) + "/" + String(magtot));
+  Serial.print(", rpm_now/set = " + String(now_rpm,2) + "/" + String(steprpm,2));
   long i = stoptime-millis();
   if(i>0){
     Serial.print(", Stop in " + String(i/60000.,1) + "min");
@@ -165,13 +243,15 @@ void printmessage(){
     Serial.print(" zpassdelta = " + String(zeropassdelta,2) );
     Serial.print(" Stoptime=" + String(stoptime) + " Millis=" + String(millis()));
     Serial.println(" Readcount = " + String(readcount));
+    Serial.print(" StepDeltNow = " + String(stepdeltnow));
+    Serial.println(" Stepcount = " + String(stepcount));
   }
   // Print current command if needed
   if(commlen){
     Serial.print("> ");
     Serial.println(command);
   }
-  if(!servo_rpm){
+  if(!steprpm){
     strip.setPixelColor(0,0,0,255);
   } else {
     strip.setPixelColor(0,0,255,0);
@@ -197,6 +277,7 @@ void commandrx(){
       if(runfile_active){
         runfile_active = false;
         runfile_nextime = 0;
+        runfile.close();
         Serial.println("Running RUNME.TXT aborted");
       }
       // run the command in comm
@@ -205,7 +286,7 @@ void commandrx(){
   }
   if(runfile_active){
     // Exit if timer is running
-	  if(runfile_nextime > millis()){
+	  if(runfile_nextime > milnow){
  	    return;
 	  }
 	  // Check if more characters available
@@ -224,17 +305,17 @@ void commandrx(){
       runfilecomm[runfilecommlen++] = rxchar;
 	    runfilecomm[runfilecommlen] = 0;
       rxchar = runfile.read();
-	  }
-	  // If command has text -> execute command
-	  if(runfilecomm[0] > 0){
-	    comm = runfilecomm;
-	    comm.trim(); // cut spaces
+	}
+	// If command has text -> execute command
+	if(runfilecomm[0] > 0){
+	  comm = runfilecomm;
+	  comm.trim(); // cut spaces
       Serial.println(comm);
-	    // If it's a sleep command, set up timer
+      // It's a comment -> ignore
       if(comm.startsWith("#")){
-        // It's a comment -> ignore
         return;
       }
+	  // If it's a sleep command, set up timer
       if(comm.startsWith("sleep")) {
   		  // Check if length is correct
  		    if (comm.length() < 7){
@@ -244,18 +325,20 @@ void commandrx(){
 		    // Get the delay
 		    String delaystr = comm.substring(6);
 		    delaystr.trim();
-		    unsigned long new_delay = delaystr.toInt();
+		    float new_delay = delaystr.toFloat();
 		    // Check if it was successfull
-		    if(new_delay==0){
+		    if(new_delay==0.0){
 		      Serial.println("Warning: Invalid sleep value in command = " + comm);
 		      return;
 		    }
 		    // Set the sleep
-		    runfile_nextime  = millis() + new_delay * 1000;
-		    Serial.println("Pausing script for " + String(new_delay) + " seconds");
+		    runfile_nextime  = millis() + new_delay * 60000;
+		    Serial.println("Pausing script for " + String(new_delay) + " minutes");
 	    } else {
 		    // Run command
 		    commandexec();
+		    // Set nextime to give pause between commands
+		    runfile_nextime = millis() + runfile_deltime;
 	    }
 	  }
   }
@@ -289,39 +372,11 @@ void commandexec(){
       stoptime = millis() + int(60000*new_stop);
       Serial.println("Set stop time in " + String(new_stop,1) + " minutes");
     } else {
-      servo_rpm = 0;
-      servo_speed = servo_zero_speed;
-      my_servo.writeMicroseconds(servo_zero_speed);
+      steprpm = 0;
+      stepvelgoal = 0;
       stoptime = 0;
-      Serial.println("Stopped Servo");
+      Serial.println("Stopped Motor");
     }
-  // Speed command
-  } else if(comm.startsWith("speed")){
-    // Check if length is correct
-    if (comm.length() < 7){
-      Serial.println("Warning: Invalid speed value in command = " + comm);
-      return;
-    }
-    // Get the speed
-    String speedstr = comm.substring(5);
-    speedstr.trim();
-    int new_speed = speedstr.toInt();
-    // Check if it was successfull
-    if(new_speed==0){
-      Serial.println("Warning: Invalid speed value in command = " + comm);
-      return;
-    }
-    // Check for valid values
-    if(new_speed < servo_min_speed || new_speed > servo_max_speed){
-      Serial.println("Warning: Speed value out or range (" + String(servo_min_speed) +
-                     ".." + String(servo_max_speed) + ") in command = " + comm);
-      return;
-    }
-    // Set the speed
-    servo_speed = new_speed;
-    my_servo.writeMicroseconds(new_speed);
-    servo_rpm = 0;
-    Serial.println("Set servo speed to " + String(new_speed));
   // RPM command
   } else if(comm.startsWith("rpm")){
     // Check if length is correct
@@ -344,13 +399,9 @@ void commandexec(){
       return;
     }
     // Set the rpm
-    servo_rpm = new_rpm;
-    Serial.println("Set servo rpm to " + String(new_rpm));
-    // If speed is zero, set initial speed at 10%
-    if(abs(servo_speed - servo_zero_speed) < 20){
-        servo_speed = servo_zero_speed + 100;
-        my_servo.writeMicroseconds(round(servo_speed));
-    }
+    steprpm = new_rpm;
+    stepvelgoal = stepperrev * steprpm / 60.0;
+    Serial.println("Set motor rpm to " + String(new_rpm));
   // Read command
   } else if(comm.startsWith("read")){
       Serial.println("Magnetometer (uT) - x, y, z, tot: " + String(magx,1) + " " +
@@ -364,7 +415,7 @@ void commandexec(){
 // DatalogWrite: Writes to datalog file
 void datalogwrite(){
   // Update time for next write
-  fileout_nextime = millis() + fileout_deltime;
+  fileout_nextime = milnow + fileout_deltime;
   // Check if drive is mounted (else mount it)
   // - - - - 
   // Make filename
@@ -393,7 +444,7 @@ void datalogwrite(){
   filename.toCharArray(fname,50);
   // Check if file exists
   int filenew = 1;
-  if(SD.exists(filename)) { filenew = 0; }
+  //#####if(SD.exists(filename)) { filenew = 0; }
   // Open file and write to it
   File dataFile = SD.open(filename, FILE_WRITE);
   // if the file is available, write to it:
@@ -401,19 +452,13 @@ void datalogwrite(){
     String datastr = "";
     if(filenew){
       datastr += "Date_Time\t";
-      datastr += "ServoSpeed\tRPMset\tRPMnow\t";
+      datastr += "MotorSpeed\tRPMset\tRPMnow\t";
       datastr += "Magx\tMagy\tMagz\r\n";
     }
     datastr += date + "_" + String(now.hour(), DEC) + ":" + String(now.minute(), DEC) +
                ":" + String(now.second(), DEC) + "\t";
-    float rpmnow = 0.0;
-    for(int i=0; i<5; i++) { rpmnow += zeropasslist[i]; }
-    datastr += String(servo_speed, 1) + "\t" + String(servo_rpm, 1) + "\t";
-    if(rpmnow>2.0){
-      datastr += String(60*5/rpmnow, 1) + "\t";
-    } else {
-      datastr += String(0.0,1) + "\t";
-    }
+    datastr += String(stepvelnow, 1) + "\t" + String(steprpm, 1) + "\t";
+    datastr += String(now_rpm, 1) + "\t";
     datastr += String(magx,1) + "\t" + String(magy,1) + "\t" + String(magz);
     dataFile.println(datastr);
     dataFile.close();
@@ -429,6 +474,11 @@ void datalogwrite(){
 void setup() {
   // Setup Serial
   Serial.begin(115200);
+  // Set Pinmodes
+  pinMode(DIRA, OUTPUT);
+  pinMode(PWRA, OUTPUT);
+  pinMode(DIRB, OUTPUT);
+  pinMode(PWRB, OUTPUT);
   // Wait for serial on USB platforms.
   if(!Serial) {
     delay(1000);
@@ -439,15 +489,16 @@ void setup() {
   strip.show();
   strip.setPixelColor(0,255,0,0);
   strip.show();
-  
+
+
   // Initialize MLX90393
   Serial.println("Starting MLX90393");
+  magsensor_present = 1;
   if (magsensor.begin()) {
     Serial.println("Found a MLX90393 sensor");
   } else {
     Serial.println("No sensor found ... trying again");
     delay(1000);
-    magsensor_present = 1;
     if (magsensor.begin()) {
       Serial.println("Found a MLX90393 sensor");
     } else {
@@ -498,70 +549,31 @@ void setup() {
 	  Serial.println("No RUNME.TXT found");
   }
 
-  // Attach Servo
-  my_servo.attach(A2);
-
   // Greeting
   Serial.println("System is ready!");
   Serial.println("Type \"help\" for a list of commands.");
 }
 
 void loop(){
-  // Handle magnet and servo
-  magnetservo();
-  // Print message
-  if(print_nextime < millis() && print_deltime > 0){
-    printmessage();
-  }
+  // Do next step if needed
+  milnow = millis();
+  // Move motor
+  stepmove();
   // Get input
   commandrx();
+  // Handle magnet and stepper change
+  if(magstep_nextime < milnow && magstep_deltime > 0){
+    magnetstep();
+  // Print message
+  } else if(print_nextime < milnow && print_deltime > 0){
+    printmessage();
   // Write log to file
-  if(fileout_nextime < millis() && fileout_deltime > 0){
+  } else if(fileout_nextime < milnow && fileout_deltime > 0){
     datalogwrite();
   }
+  // Write to command log file
   // Sleep until next reading
-  int sleep_delay = read_nextime - millis();
-  if(sleep_delay>0){ delay(sleep_delay); }
-}
-
-// Test_Loop: tests functionality of all hardware
-void looptst() {
-  // Print data from magsensor
-  if(magsensor.readData(&magx, &magy, &magz)) {
-      Serial.print("X: "); Serial.print(magx, 4); Serial.println(" uT");
-      Serial.print("Y: "); Serial.print(magy, 4); Serial.println(" uT");
-      Serial.print("Z: "); Serial.print(magz, 4); Serial.println(" uT");
-  } else {
-      Serial.println("Unable to read XYZ data from the sensor.");
-  }
-  // Print clock
-  DateTime now = rtc.now();
-  Serial.print(now.hour(), DEC);
-  Serial.print(':');
-  Serial.print(now.minute(), DEC);
-  Serial.print(':');
-  Serial.print(now.second(), DEC);
-  Serial.println();
-  // Add line to data.txt
-  //File dataFile = SD.open("datalog.txt", FILE_WRITE);
-  //File dataFile = SD.open("19073015.txt", FILE_WRITE);
-  // if the file is available, write to it:
-  //if (dataFile) {
-  //  dataFile.println("File Done");
-  //  dataFile.close();
+  //if ( millis() == milnow ){
+	//  delay(1);
   //}
-  // if the file isn't open, pop up an error:
-  //else {
-  //  Serial.println("error opening 19073015.txt");
-  //}
-  // Change servo
-  if(servo_speed < 1600) {
-    servo_speed += 10;
-  } else {
-    servo_speed = 1400;
-  }
-  my_servo.writeMicroseconds(servo_speed);
-  Serial.print("Servo Speed = ");
-  Serial.println(servo_speed);
-  delay(1000);
 }

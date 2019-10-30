@@ -21,9 +21,11 @@ unsigned long milnow = 0; // current millis
 unsigned long milnext = 0; // Next mil counter at which step is called
 unsigned long milbase = 0; // base count in milisecond
 unsigned long mildelt = 0; // microseconds for next count
-unsigned long deltime = 120494; // time between steps (microseconds)
+unsigned long deltime = 33000; // time between steps (microseconds)
 unsigned long milprint = 0; // next print
+int chcount = 0; // count to next change of step
 int stepdir = 0; // step dir inside nextstep
+int acc = 1; // accelerate at start
 
 void nextstep(){
   digitalWrite(PWRA, LOW);
@@ -85,8 +87,23 @@ void loop() {
   if(milprint < millis()){
     milprint += 2000;
     Serial.println(mcount);
-    Serial.println(milprint);
     Serial.print(milbase); Serial.print(" "); Serial.println(mildelt);
+    Serial.print("Speed = "); Serial.println(deltime);
+    if(!chcount){
+      if(acc){
+        if(deltime>2000){
+          deltime = 9*deltime/10;
+        } else {
+          acc = 0;
+          deltime = 2000;
+        }
+      }
+      chcount=1;
+      deltime = 51*deltime/50;
+      if(deltime>50000){ deltime = 2000; }
+    } else {
+      chcount--;
+    }
   }
   countup();
 }
