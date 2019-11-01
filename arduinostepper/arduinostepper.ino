@@ -37,6 +37,8 @@
 #define PWRA 3
 #define DIRB 13
 #define PWRB 11
+#define CPU_HZ 48000000
+#define TIMER_PRESCALER_DIV 256
 
 //**** Includes
 #include <SPI.h>
@@ -49,7 +51,8 @@
 
 //**** Global Variables
 // Steper Motor Variables:
-int stepcount = 0; // counter for steps (always 0..1023)
+volatile int stepcount = 0; // counter for steps (always 0..1023)
+int stepdir = 0; // motor direction 1 for positive, -1 for negative, 0 for stopped
 float steprpm = 0; // current set RPM (0 for no move, always agrees with stepdeltgoal)
 float stepvelgoal = 0; // goal step velocity steps/sec
 float stepvelnow = 0; // current velocity steps/sec
@@ -58,13 +61,13 @@ float stepaccel = 100; // acceleration [steps/s/s]
 float stepperrev = 200; // steps per revolution
 unsigned long stepnextms = 0; // milliseconds at which next step to be taken [ms]
 unsigned long stepnextmic = 0; // microseconds at which next step to be taken [us] (0..999)
-int stepdir = 0; // variable inside nextstep()
+volatile int coildir = 0; // variable inside interrupt
 // Timing variables: measured in ms
 unsigned long milnow = 0; // current millis (to avoid calls to millis())
 unsigned long magstep_nextime = 0, magstep_deltime = 50;
-unsigned long fileout_nextime = 0, fileout_deltime = 5000;
+unsigned long fileout_nextime = 0, fileout_deltime = 100;
 unsigned long print_nextime = 0, print_deltime = 1000;
-unsigned long runfile_nextime = 0, runfile_deltime = 1000;
+unsigned long runfile_nextime = 0, runfile_deltime = 200;
 unsigned long stoptime = 0; // countdown is set if stoptime > 0
 // Help message
 String help_message = "Magnetic Field Rotator Commands:\r\n"
@@ -160,13 +163,85 @@ void stepmove(){
   }
 }
 
+void interruptSetFrequency(int frequencyHz) {
+  int compareValue = (CPU_HZ / (TIMER_PRESCALER_DIV * frequencyHz)) - 1; // calculate compare value
+  TcCount16* TC = (TcCount16*) TC3;
+  // Make sure the count is in a proportional position to where it was
+  // to prevent any jitter or disconnect when changing the compare value.
+  TC->COUNT.reg = map(TC->COUNT.reg, 0, TC->CC[0].reg, 0, compareValue);
+  TC->CC[0].reg = compareValue; // Set Compare value
+  while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
+}
+
+void interruptInit(int frequencyHz) {
+  REG_GCLK_CLKCTRL = (uint16_t) (GCLK_CLKCTRL_CLKEN | GCLK_CLKCTRL_GEN_GCLK0 | GCLK_CLKCTRL_ID_TCC2_TC3) ;
+  while ( GCLK->STATUS.bit.SYNCBUSY == 1 ); // wait for sync
+
+  TcCount16* TC = (TcCount16*) TC3; // Get Time Counter
+
+  TC->CTRLA.reg &= ~TC_CTRLA_ENABLE;
+  while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
+
+  // Use the 16-bit timer
+  TC->CTRLA.reg |= TC_CTRLA_MODE_COUNT16; // Set 16 bit count mode
+  while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
+
+  // Use match mode so that the timer counter resets when the count matches the compare register
+  TC->CTRLA.reg |= TC_CTRLA_WAVEGEN_MFRQ;
+  while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
+
+  // Set prescaler to 1024
+  TC->CTRLA.reg |= TC_CTRLA_PRESCALER_DIV256;
+  while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
+
+  interruptSetFrequency(frequencyHz);
+
+  // Enable the compare interrupt
+  TC->INTENSET.reg = 0;
+  TC->INTENSET.bit.MC0 = 1;
+
+  NVIC_EnableIRQ(TC3_IRQn);
+
+  TC->CTRLA.reg |= TC_CTRLA_ENABLE;
+  while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
+}
+
+void TC3_Handler() {
+  TcCount16* TC = (TcCount16*) TC3;
+  // If this interrupt is due to the compare register matching the timer count
+  // we send a pulse to the motor
+  if (TC->INTFLAG.bit.MC0 == 1) {
+    TC->INTFLAG.bit.MC0 = 1;
+    // Switch coils off
+    digitalWrite(PWRA, LOW);
+    digitalWrite(PWRB, LOW);
+    if(stepdir){
+      // Increase (and limit) step count
+      stepcount+=stepdir;
+      if(stepcount==1024){ stepcount = 0; }
+      if(stepcount<0){ stepcount = 1023; }
+      // Get active coil direction
+      if(stepcount & 2){ coildir = HIGH;
+      } else { coildir = LOW; }
+      // Set active coil
+      if(stepcount & 1){
+        digitalWrite(DIRA,coildir);
+        digitalWrite(PWRA,HIGH);
+      } else {
+        digitalWrite(DIRB,coildir);
+        digitalWrite(PWRB,HIGH);
+      }
+    }
+  }
+}
+
 // Magnetstep: Reads the magnet and updates stepper speed
 void magnetstep(){
   // Update time for next readout
   magstep_nextime = millis() + magstep_deltime;
   readcount ++;
   // read magnet values
-  //magsensor.readData(&magx, &magy, &magz);
+  magsensor.readData(&magx, &magy, &magz);
   magtot = sqrt(magx*magx+magy*magy+magz*magz);
   // Get mag statistics
   magval = magy;
@@ -206,8 +281,10 @@ void magnetstep(){
     }
     if(abs(stepvelnow)>1.0){
       stepdeltnow = 1000000.0 / stepvelnow;
+      stepdir = 1;
     } else {
-      stepdeltnow = 0;
+      stepdeltnow = 10000;
+      stepdir = 0;
     }
   // Else if need to accelerate
   } else if( stepvelnow < stepvelgoal ){
@@ -218,10 +295,13 @@ void magnetstep(){
     }
     if(abs(stepvelnow)>1.0){
       stepdeltnow = 1000000.0 / abs(stepvelnow);
+      stepdir = 1;
     } else {
-      stepdeltnow = 0;
+      stepdeltnow = 10000;
+      stepdir = 0;
     }
   }
+  interruptSetFrequency(1000000/stepdeltnow);
 }
 
 // PrintMessage: Prints messages
@@ -243,7 +323,7 @@ void printmessage(){
     Serial.print(" zpassdelta = " + String(zeropassdelta,2) );
     Serial.print(" Stoptime=" + String(stoptime) + " Millis=" + String(millis()));
     Serial.println(" Readcount = " + String(readcount));
-    Serial.print(" StepDeltNow = " + String(stepdeltnow));
+    Serial.print(" StepDeltNow = " + String(stepdeltnow*stepdir));
     Serial.println(" Stepcount = " + String(stepcount));
   }
   // Print current command if needed
@@ -394,8 +474,8 @@ void commandexec(){
       return;
     }
     // Check for valid values
-    if(new_rpm < 1 || new_rpm > 150){
-      Serial.println("Warning: RPM value out or range (1..150) in command = " + comm);
+    if(new_rpm < 1 || new_rpm > 180){
+      Serial.println("Warning: RPM value out or range (1..180) in command = " + comm);
       return;
     }
     // Set the rpm
@@ -548,6 +628,9 @@ void setup() {
   } else {
 	  Serial.println("No RUNME.TXT found");
   }
+  // Initialize timer interrupt
+  interruptInit(1); // at 1Hz - irrelevant since it's off
+
 
   // Greeting
   Serial.println("System is ready!");
@@ -558,7 +641,7 @@ void loop(){
   // Do next step if needed
   milnow = millis();
   // Move motor
-  stepmove();
+  //stepmove();
   // Get input
   commandrx();
   // Handle magnet and stepper change
