@@ -16,8 +16,9 @@ Connect the magnetic sensor to any of the RJ-12 connectors. Then connect the ser
 ### RGB Diagnostics
 The onboard RGB LED will indicate status
  * Red: initializing
- * Green: RPM mode
- * Blue: Speed mode
+ * Green: at speed
+ * Yellow: speeding up / slowing down
+ * Blue: at speed with magnet sensor confirmation of RPM
  * Red blinking: Problem with writing to the SD card.
 
 ### Serial Communication with the Rotator
@@ -26,10 +27,13 @@ To communicate with the rotator you need either the Arduino program or the Mu ed
 Once the communication is established you should see information streaming from the rotator. Enter the "help" command for a list of available commands.
 
 ### Recording Data
-The system includes an SD card slot. Whenever a properly formatted SD card is inserted the system records current settings and readouts. Each hour a new file is generated, the filename format is YYMMDDHH.TXT composed of the current year, month, day and hour. It is recommended to unplug the system from the power supply / USB cable before removing the SD card.
+The system includes an SD card slot. Whenever a properly formatted SD card is inserted the system records current settings and readouts. Each hour a new file is generated, the filename format is YYMMDDHH.TXT composed of the current year, month, day and hour. It is recommended to unplug the system from the power supply / USB cable before removing the SD card. The system also keeps a logfile file in the format YYMMDDLG.TXT which contains a log of system events.
 
 ### Scripted Operation
 You can load a simple script which will run whenever the system starts up onto the SD card. The script has to be in a file called RUNME.TXT. The script can contain any command listed in the help function. The script can also contain the sleep command, which is the word "sleep" followed by the number of seconds that the system should wait before executing the next command. Entering any command over the serial connection will interrupt execution of the RUNME script.
+
+### Autorestart
+It is possible that the motor stalls during regular operation. If a magnetic sensor is attached to the system, setting the autorestart option will set up the system to automatically detect stopped rotation and will stop and restart the system. This feature only works if the magnetic sensor is sufficiently close to the rotating magnet.
 
 ### LabView Program
 The system can also be controlled by a labview program which is the 
