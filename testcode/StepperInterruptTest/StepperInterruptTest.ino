@@ -10,9 +10,17 @@
  * Formula RPM to deltime: deltime = 300000 / rpm
  */
 
+/*
+// Settings for old motor shield
 #define DIRA 12
 #define PWRA 3
 #define DIRB 13
+#define PWRB 11
+*/
+// Settings for new motor shield
+#define DIRA 2
+#define PWRA 3
+#define DIRB 4
 #define PWRB 11
 #define DTIME 5 // In microseconds
 #define CPU_HZ 48000000
