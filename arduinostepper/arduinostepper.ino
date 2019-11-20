@@ -101,13 +101,14 @@ float magval = 0.0; // Magnetic input value
 float medval = 0.0, fltval = 0.0; // very long and short filter values
 float oldval = 0.0; // previous fltval
 // Magnet zero passage times and deltas (to measure rpm)
-unsigned long zeropasstime = 0.0; // time of last passage through zero (ms)
+unsigned long zeropasstime = 0; // time of last passage through zero (ms)
 float zeropassdelta = 1.0; // current time between last zero passages (s)
 float zeropasslist[5] = {0.2, 0.2, 0.2, 0.2, 0.2}; // list of deltas of zero passages
 int zeropasslind = 0; // index for list
 float now_rpm = 0; // measured RPM from magnetic sensor
 int rpm_good = 0; // number of good RPM measurements
-int autorestart = 0; // autorestart flag: ==0 inactive, ==1 active >1 waiting & stopped
+int autorestart = 0; // autorestart flag: ==0 inactive, ==1 active ==2 waiting & stopped ==3 accelerating
+long autorestartimer = 0; // millis for next autorestart function
 // Input / Info variables
 char command[200] = ""; // Command input
 int commlen = 0; // current length of command input
@@ -253,17 +254,31 @@ void magnetstep(){
     logmessage = "Stopping motor now";
     Serial.println(logmessage);
   }
+  // Check if autorestart accelerating
+  if(autorestart == 3){
+    if(autorestartimer < milnow){
+      autorestart = 1;
+    }
+  }
   // Check if we're stopped after an autorestart
-  if(autorestart > 1){
-	autorestart--;
+  if(autorestart == 2){
+    if(autorestartimer < milnow){
+      autorestart = 3;
+      autorestartimer = milnow + 30000; // set to wait for 20s until activate autorestart
+    }
   // Check zero pass has been missing for 5 rotations plus 5 sec -> trigger autorestart
   // - also make sure we're supposed to be at speed -
-  } else if(autorestart && milnow - zeropasstime > (300000/steprpm+5000) &&
-		    abs(stepvelnow - stepvelgoal) > stepvelgoal/10) {
-	// Autorestart required, do an OFF and set delay
-	stepvelnow = 0;
-	stepdir = 0;
-	autorestart = 5000 / magstep_deltime; // set to start up again in 5s
+  } else if(autorestart==1 && milnow - zeropasstime > (300000/steprpm+5000) &&
+		abs(stepvelnow - stepvelgoal) < stepvelgoal/10 ) {
+	  // Autorestart required, do an OFF and set delay
+	  stepvelnow = 0;
+	  stepdir = 0;
+	  autorestartimer = milnow + 2000; // set to start up again in 1s
+    autorestart = 2;
+    zeropasstime = milnow;
+    logmessage = "Autorestart Triggered with: Milnow - Zeropasstime = " + String(milnow-zeropasstime) +
+                 " Stepvelnow - Stepvelgoal = " + String(stepvelnow - stepvelgoal);
+    Serial.println(logmessage);
   // Update motor speed (assume this happens every magstep_deltime)
   // If goal is smaller
   } else if(stepvelgoal < stepvelnow){
@@ -297,16 +312,16 @@ void magnetstep(){
   interruptSetFrequency(1000000/stepdeltnow);
   // Set RGB LED color
   if(autorestart > 1){
-	// Autorestart triggered and stopped -> Red
-	strip.setPixelColor(0,255,0,0);
+  	// Autorestart triggered and stopped -> Red
+	  strip.setPixelColor(0,255,0,0);
   } else if(abs(stepvelnow - stepvelgoal) > stepvelgoal/10 ){
-	// Not at speed -> Orange
-	strip.setPixelColor(0,255,153,0);
+	  // Not at speed -> Orange
+	  strip.setPixelColor(0,255,153,0);
   } else if(rpm_good > 3){
-	// Speed good -> Blue
+	  // Speed good -> Blue
     strip.setPixelColor(0,51,51,255);
   } else {
-	// At speed -> Green
+	  // At speed -> Green
     strip.setPixelColor(0,0,255,0);
   }
   strip.show();
@@ -329,10 +344,12 @@ void printmessage(){
   if(show_debug){
     Serial.print(" valmed/flt = " + String(medval,1) + "/" + String(fltval,1) );
     Serial.print(" zpassdelta = " + String(zeropassdelta,2) );
-    Serial.print(" Stoptime=" + String(stoptime) + " Millis=" + String(millis()));
+    Serial.print(" Stoptime=" + String(stoptime) + " Millis=" + String(milnow) + " ZpassTime=" + String(zeropasstime));
     Serial.println(" Readcount = " + String(readcount));
     Serial.print(" StepDeltNow = " + String(stepdeltnow*stepdir));
-    Serial.println(" Stepcount = " + String(stepcount));
+    Serial.print(" Stepcount = " + String(stepcount));
+    Serial.print(" Autorestart = " + String(autorestart));
+    Serial.println(" Autoretimer = " + String(autorestartimer));
   }
   // Print current command if needed
   if(commlen){
@@ -463,7 +480,6 @@ void commandexec(){
     } else {
       steprpm = 0;
       stepvelgoal = 0;
-      stepvelnow = 0;
       stoptime = 0;
       logmessage = "Stopping Motor";
       Serial.println(logmessage);
