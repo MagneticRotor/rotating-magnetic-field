@@ -26,6 +26,12 @@ To communicate with the rotator you need either the Arduino program or the Mu ed
 
 Once the communication is established you should see information streaming from the rotator. Enter the "help" command for a list of available commands.
 
+#### Using Screen on Mac
+Use the screen command to connect to the controller on a mac/unix machine:
+ * Go to the /dev folder: cd /dev
+ * Look for the correct device: use ls - look for something called USB**** tty.usbmodemNNNN
+ * Use the screen command: screen /dev/tty.usbmodem1411 115200 (make sure you have the correct device name from the /dev folder
+
 ### Recording Data
 The system includes an SD card slot. Whenever a properly formatted SD card is inserted the system records current settings and readouts. Each hour a new file is generated, the filename format is YYMMDDHH.TXT composed of the current year, month, day and hour. It is recommended to unplug the system from the power supply / USB cable before removing the SD card. The system also keeps a logfile file in the format YYMMDDLG.TXT which contains a log of system events.
 
